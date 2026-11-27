@@ -1,5 +1,5 @@
 --[[
-    PeexHubs | GrowLock v0.10   (untuk build Growlock.lua)
+    PeexHubs | GrowLock v0.14   (untuk build Growlock.lua)
 
     Command (prefix default "/"):
       /cd <jumlah> [lock]     Fast drop lock. Tanpa [lock] = pakai lock terpilih
@@ -14,6 +14,7 @@
       /afdelay <detik>        Delay hit/place (hit min 0.22 dtk, place min 0.2 dtk)
       /log                    Buka tab Update Log
       /afid <nama|id>         Block yang di-farm
+      /df [on|off]            Auto Dirt Farm (dig sampai bedrock, respawn, place dirt, tanam+panen seed)
       /gstatus                Cek status world / posisi / kamera
       /gt                     Buka/tutup GUI
 
@@ -57,6 +58,41 @@ local LOCKS = {
 -- UPDATE LOG
 ----------------------------------------------------------------------
 local UPDATE_LOG = {
+    {
+        version = "v0.14",
+        date = "2026-11-27",
+        notes = {
+            "Zoom Out Besar: batas zoom out game (world.zoomMin, default 0.6) diturunkan sampai 0.05, jadi bisa zoom out jauh lebih lebar. Nilai bisa diatur.",
+            "Long Punch: jangkauan pukul/place (punchRange & buildRange) diperbesar sampai 40 tile. Auto Farm & Dirt Farm ikut memakainya. Server tetap memvalidasi jarak.",
+        },
+    },
+    {
+        version = "v0.13",
+        date = "2026-11-27",
+        notes = {
+            "Fitur baru: Auto Dirt Farm (tab Dirt). Jalan ke ujung, break 2 blok bawah, break lurus sampai ujung (cave background ikut hancur), break 1 blok atas, turun lagi sampai bedrock.",
+            "Setelah bedrock: respawn, jalan ke ujung lantai yang tidak bolong, place dirt sampai ujung, teleport naik ke baris yang barusan di-place, ulangi sampai paling atas.",
+            "Dirt habis: tanam Dirt Seed (20-50), tunggu tree matang, panen otomatis, ambil drop, lanjut place. Delay break/place bisa diatur. Command: /df on/off.",
+        },
+    },
+    {
+        version = "v0.12",
+        date = "2026-11-26",
+        notes = {
+            "God mode diperluas: anti mental (event Knocked dari pukulan pemain & Impulse), anti mati (fungsi mati game diganti kosong: lava, spike, api, laser, gerbang, Burned, ForceDie), anti lava/spike/laser/bumper (flag ItemDB) dan anti api (world.fireAt).",
+            "Semua dikembalikan seperti semula saat God mode dimatikan. Ringkasan hasil (jumlah flag/event yang dimatikan) muncul di notifikasi.",
+        },
+    },
+    {
+        version = "v0.11",
+        date = "2026-11-26",
+        notes = {
+            "Auto Collect baru: tidak teleport antar drop. Berjalan 1 tile per langkah (kecepatan jalan game), satu pemberhentian per tile, sistem collect game yang mengambil item/gems.",
+            "Hanya drop di tile hijau (termasuk drop yang lahir dari tile hijau lalu jatuh). Diverifikasi berulang sampai habis; sisa (backpack penuh / terhalang) dilaporkan. Statistik \"Belum terambil\" di tab Farm.",
+            "Tab Nama baru: nama ID Growlock palsu, mode [HIDDEN], dan ganti title (id title game, teks bebas, atau tanpa title). Hanya visual lokal.",
+            "Command baru: /fakename, /faketitle, /fakeid, /titles.",
+        },
+    },
     {
         version = "v0.10",
         date = "2026-11-26",
@@ -115,6 +151,17 @@ local cfg = {
     farmId = 0,           -- id block yang di-farm
     farmDelay = 0.05,     -- jeda antar hit / place (detik, minimal 0.01)
     farmCollect = true,   -- ambil drop otomatis di area 5x5
+    zoomOn = false,       -- zoom out besar
+    zoomMin = 0.2,        -- batas zoom out (0.05 - 0.6, makin kecil makin jauh)
+    punchOn = false,      -- long punch
+    punchRange = 8,       -- jangkauan pukul/place minimal (tile, 3 - 40)
+    dirtId = 0,           -- Auto Dirt Farm: id block dirt (0 = cari otomatis)
+    dirtSeedId = 0,       -- id Dirt Seed (0 = cari otomatis)
+    dirtSeedCount = 30,   -- jumlah seed yang ditanam saat dirt habis (20-50)
+    dirtDelay = 0.22,     -- jeda break / place (detik)
+    dirtPlace = true,     -- place dirt dari bawah ke atas setelah dig
+    dirtSeed = true,      -- tanam & panen seed kalau dirt habis
+    dirtCollect = true,   -- ambil drop otomatis
     uiScale = 1,          -- skala GUI (0.6 - 1.6)
     winX = 0,             -- posisi window (offset dari tengah layar)
     winY = 0,
@@ -122,6 +169,10 @@ local cfg = {
     god = false,
     visual = {},          -- id item (string) -> jumlah yang dimasukkan ke inventory lewat tab Visual
     visualAmount = 1,     -- jumlah per tekan di tab Visual (1-200)
+    idOn = false,         -- identitas palsu (visual lokal)
+    idName = "",          -- nama ID Growlock palsu
+    idHidden = false,     -- tampilkan [HIDDEN]
+    idTitle = "",         -- "" = asli, "none" = tanpa title, id title, atau teks bebas
 }
 
 local function LoadConfig()
@@ -145,6 +196,12 @@ local function LoadConfig()
     end
     cfg.farmDelay = math.max(0.01, tonumber(cfg.farmDelay) or 0.05)
     cfg.farmId = tonumber(cfg.farmId) or 0
+    cfg.dirtId = math.max(0, math.floor(tonumber(cfg.dirtId) or 0))
+    cfg.zoomMin = math.clamp(tonumber(cfg.zoomMin) or 0.2, 0.05, 0.6)
+    cfg.punchRange = math.clamp(tonumber(cfg.punchRange) or 8, 3, 40)
+    cfg.dirtSeedId = math.max(0, math.floor(tonumber(cfg.dirtSeedId) or 0))
+    cfg.dirtSeedCount = math.clamp(math.floor(tonumber(cfg.dirtSeedCount) or 30), 1, 50)
+    cfg.dirtDelay = math.clamp(tonumber(cfg.dirtDelay) or 0.22, 0.01, 5)
     local gifts = {}
     if type(cfg.visual) == "table" then
         for key, value in pairs(cfg.visual) do
@@ -1264,14 +1321,36 @@ local function SetClickTp(on)
 end
 
 ----------------------------------------------------------------------
--- GOD MODE
--- Flag "hurts"/"deadly" di ItemDB dimatikan (lava, spike, api) dan event
--- "Burned" dari server diabaikan. Hanya di sisi client; tidak berlaku untuk
--- kick / ban / aksi staff.
+-- GOD MODE (hanya client; tidak berlaku untuk kick / ban / aksi staff)
+-- Hasil baca Growlocks.lua:
+--  * Kena lava / api / spike: loop fisika memanggil check flag ItemDB
+--    ("hurts" = luka -1 nyawa + loncat, "deadly" = langsung mati, "laser",
+--    "bumper" = mental) dan world.fireAt(x, y) (peta api). Nyawa habis ->
+--    fungsi mati (suara male_scream/"ouch", jadi ghost 2 dtk lalu respawn).
+--  * Mati juga dipicu event server: "Burned" (terbakar), "ForceDie", gerbang
+--    yang menutup di badan pemain, dan hp <= 0.
+--  * Mental: event server "Knocked" (pukulan pemain lain; kecepatan +-9 ke
+--    samping + loncat kecil) dan "Impulse" (dorongan lain, mis. jamur).
+-- Yang dilakukan:
+--  1) flag hurts/deadly/laser/bumper di ItemDB dimatikan (anti lava, spike,
+--     laser, bumper) dan world.fireAt dibuat selalu false (anti api).
+--  2) fungsi mati milik game diganti kosong (anti mati dari sumber apa pun:
+--     Burned, ForceDie, gerbang, hp habis). Dicari lewat upvalue
+--     world.touchBlocks (konstanta "male_scream").
+--  3) koneksi event Knocked + Impulse + Burned + ForceDie dimatikan
+--     (anti mental pukulan orang).
+-- Semua dikembalikan persis seperti semula saat God mode dimatikan.
 ----------------------------------------------------------------------
 local godOn = false
 local godSaved = {}
 local godConns = {}
+local godRestore = {}
+local godInfo = { flags = 0, events = 0, death = false, fire = false }
+local setupvalueFn = (debug and debug.setupvalue) or setupvalue
+local getconstantsFn = (debug and debug.getconstants) or getconstants
+
+local GOD_FLAGS = { "hurts", "deadly", "laser", "bumper" }
+local GOD_EVENTS = { "Burned", "ForceDie", "Knocked", "Impulse" }
 
 local function StopGod()
     if not godOn then
@@ -1289,10 +1368,42 @@ local function StopGod()
         end)
     end
     godConns = {}
+    for _, restore in ipairs(godRestore) do
+        pcall(restore)
+    end
+    godRestore = {}
     godOn = false
     cfg.god = false
     SaveConfig()
     Notify("God mode: mati")
+end
+
+-- Cari fungsi mati milik game lewat upvalue world.touchBlocks
+local function GodFindDeath(world)
+    if type(world) ~= "table" or type(world.touchBlocks) ~= "function" or not setupvalueFn or not getconstantsFn then
+        return nil
+    end
+    local ups, count = ReadUpvalues(world.touchBlocks, 80)
+    for index = 1, count do
+        local fn = ups[index]
+        if type(fn) == "function" then
+            local ok, consts = pcall(getconstantsFn, fn)
+            if ok and type(consts) == "table" then
+                local scream, ouch = false, false
+                for _, value in pairs(consts) do
+                    if value == "male_scream" then
+                        scream = true
+                    elseif value == "ouch" then
+                        ouch = true
+                    end
+                end
+                if scream and ouch then
+                    return index, fn
+                end
+            end
+        end
+    end
+    return nil
 end
 
 local function StartGod()
@@ -1304,12 +1415,16 @@ local function StartGod()
         Notify("ItemDB game tidak ditemukan!")
         return
     end
+    godInfo = { flags = 0, events = 0, death = false, fire = false }
+
+    -- 1) flag berbahaya di ItemDB
     godSaved = {}
     for _, item in pairs(db) do
         if type(item) == "table" then
-            for _, key in ipairs({ "hurts", "deadly" }) do
+            for _, key in ipairs(GOD_FLAGS) do
                 if rawget(item, key) then
                     table.insert(godSaved, { item = item, key = key, value = rawget(item, key) })
+                    godInfo.flags += 1
                     pcall(function()
                         if setreadonly then
                             setreadonly(item, false)
@@ -1320,22 +1435,61 @@ local function StartGod()
             end
         end
     end
+
+    local world = FindWorld()
+    if type(world) == "table" then
+        -- peta api
+        local originalFire = rawget(world, "fireAt")
+        if type(originalFire) == "function" then
+            local ok = pcall(function()
+                world.fireAt = function()
+                    return false
+                end
+            end)
+            if ok then
+                godInfo.fire = true
+                table.insert(godRestore, function()
+                    world.fireAt = originalFire
+                end)
+            end
+        end
+        -- 2) fungsi mati diganti kosong
+        local index, deathFn = GodFindDeath(world)
+        if index then
+            local ok = pcall(setupvalueFn, world.touchBlocks, index, function() end)
+            if ok then
+                godInfo.death = true
+                table.insert(godRestore, function()
+                    setupvalueFn(world.touchBlocks, index, deathFn)
+                end)
+            end
+        end
+    end
+
+    -- 3) event server: Burned, ForceDie, Knocked, Impulse
     local remotes = ReplicatedStorage:FindFirstChild("WorldRemotes")
-    local burned = remotes and remotes:FindFirstChild("Burned")
-    if burned and getconnections then
-        local okConn, conns = pcall(getconnections, burned.OnClientEvent)
-        if okConn and type(conns) == "table" then
-            for _, conn in ipairs(conns) do
-                if pcall(function() conn:Disable() end) then
-                    table.insert(godConns, conn)
+    if remotes and getconnections then
+        for _, name in ipairs(GOD_EVENTS) do
+            local remote = remotes:FindFirstChild(name)
+            if remote then
+                local okConn, conns = pcall(getconnections, remote.OnClientEvent)
+                if okConn and type(conns) == "table" then
+                    for _, conn in ipairs(conns) do
+                        if pcall(function() conn:Disable() end) then
+                            table.insert(godConns, conn)
+                            godInfo.events += 1
+                        end
+                    end
                 end
             end
         end
     end
+
     godOn = true
     cfg.god = true
     SaveConfig()
-    Notify("God mode: AKTIF")
+    Notify(string.format("God mode AKTIF | flag %d, event %d, anti mati: %s, anti api: %s",
+        godInfo.flags, godInfo.events, godInfo.death and "ya" or "tidak (pakai flag)", godInfo.fire and "ya" or "tidak"))
 end
 
 local function Diag()
@@ -1349,6 +1503,140 @@ local function Diag()
         PosHook.how, PosHook.count,
         c and "siap" or ("belum - " .. tostring(camError)),
         Noclip.on and "on" or "off")
+end
+
+----------------------------------------------------------------------
+-- ZOOM OUT BESAR & LONG PUNCH
+-- Dipelajari dari Growlocks.lua:
+--  * ZOOM : batas zoom out = world.zoomMin (default 0.6). Command staff /modzoom
+--    mengisinya 0.35 + world.zoomOut, lalu memicu hitung ulang lewat attribute
+--    "ModZoom" milik LocalPlayer. Nilai lebih KECIL = bisa zoom out lebih jauh.
+--    Script mengisi field yang sama sendiri (tanpa perlu staff), nilai bebas.
+--  * PUNCH: jangkauan pukul/place dihitung inventory.punchRange() dan buildRange()
+--    (= reach item yang dipakai + 2.5; staff 200). Game memanggilnya lewat tabel
+--    inventory tiap aksi, jadi kedua fungsi dibungkus supaya minimal sebesar
+--    jarak yang kamu atur. Auto Farm / Dirt Farm ikut memakainya.
+--    Catatan: server tetap memvalidasi jarak sendiri; kalau melewati batas yang
+--    diizinkan server, aksi bisa ditolak.
+----------------------------------------------------------------------
+local Zoom = { on = false, token = 0 }
+
+local function ZoomValue()
+    return math.clamp(tonumber(cfg.zoomMin) or 0.2, 0.05, 0.6)
+end
+
+function Zoom.Apply()
+    local world = FindWorld()
+    if not InWorld(world) then
+        return false
+    end
+    local value = ZoomValue()
+    pcall(function()
+        world.zoomMin = value
+        world.zoomOut = value
+        Player:SetAttribute("ModZoom", nil)
+        Player:SetAttribute("ModZoom", true) -- memicu game menghitung ulang tampilan
+    end)
+    return true
+end
+
+function Zoom.Start()
+    if Zoom.on then
+        return Zoom.Apply()
+    end
+    if not Zoom.Apply() then
+        Notify("Zoom: masuk world dulu.")
+        return false
+    end
+    Zoom.on = true
+    Zoom.token += 1
+    local token = Zoom.token
+    task.spawn(function()
+        while Zoom.on and Zoom.token == token do
+            task.wait(1)
+            local world = FindWorld()
+            if InWorld(world) and rawget(world, "zoomMin") ~= ZoomValue() then
+                Zoom.Apply()
+            end
+        end
+    end)
+    return true
+end
+
+function Zoom.Stop()
+    if not Zoom.on then
+        return false
+    end
+    Zoom.on = false
+    Zoom.token += 1
+    local world = FindWorld()
+    if world then
+        pcall(function()
+            world.zoomMin = nil
+            world.zoomOut = nil
+            Player:SetAttribute("ModZoom", nil)
+            Player:SetAttribute("ModZoom", false)
+        end)
+    end
+    return true
+end
+
+local LongPunch = { on = false }
+
+local function PunchValue()
+    return math.clamp(tonumber(cfg.punchRange) or 8, 3, 40)
+end
+
+function LongPunch.Start()
+    if LongPunch.on then
+        return true
+    end
+    local inv = FindInventory()
+    if not inv or type(inv.punchRange) ~= "function" or type(inv.buildRange) ~= "function" then
+        Notify("Long Punch: fungsi range game tidak ditemukan.")
+        return false
+    end
+    local origPunch, origBuild = inv.punchRange, inv.buildRange
+    local function Wrap(orig)
+        return function(...)
+            local base = orig(...)
+            if type(base) ~= "number" then
+                base = 2.5
+            end
+            return math.max(base, PunchValue())
+        end
+    end
+    local wrapPunch, wrapBuild = Wrap(origPunch), Wrap(origBuild)
+    pcall(function()
+        rawset(inv, "punchRange", wrapPunch)
+        rawset(inv, "buildRange", wrapBuild)
+    end)
+    if inv.punchRange ~= wrapPunch or inv.buildRange ~= wrapBuild then
+        pcall(function()
+            rawset(inv, "punchRange", origPunch)
+            rawset(inv, "buildRange", origBuild)
+        end)
+        Notify("Long Punch: gagal memasang.")
+        return false
+    end
+    LongPunch.inv, LongPunch.origPunch, LongPunch.origBuild = inv, origPunch, origBuild
+    LongPunch.on = true
+    return true
+end
+
+function LongPunch.Stop()
+    if not LongPunch.on then
+        return false
+    end
+    LongPunch.on = false
+    local inv = LongPunch.inv
+    if inv then
+        pcall(function()
+            rawset(inv, "punchRange", LongPunch.origPunch)
+            rawset(inv, "buildRange", LongPunch.origBuild)
+        end)
+    end
+    return true
 end
 
 ----------------------------------------------------------------------
@@ -1790,12 +2078,14 @@ end)
 --              jalan ke drop lewat world.goTo lalu kembali ke posisi awal.
 -- Area = kotak 5x5 dengan pusat di tile pemain saat Auto Farm dinyalakan.
 ----------------------------------------------------------------------
+local Dirt = { on = false, token = 0, status = "Mati", stats = { rows = 0, broken = 0, placed = 0, planted = 0, harvested = 0, picked = 0 } }
+
 local Farm = {
     on = false,
     token = 0,
     anchor = nil,
     status = "Mati",
-    stats = { cycles = 0, placed = 0, broken = 0, picked = 0 },
+    stats = { cycles = 0, placed = 0, broken = 0, picked = 0, missed = 0 },
     fns = {},
     fnWorld = nil,
 }
@@ -2086,85 +2376,279 @@ local function FarmMayBuild(world, x, y)
     return true
 end
 
--- Ambil drop yang jatuh di kolom tile yang DIPILIH di grid 5x5, lalu kembali ke
--- posisi awal. Pengambilan item/gems dilakukan sistem collect game sendiri saat
--- player berdiri di atas drop (script tidak memanggil takeDrop).
+----------------------------------------------------------------------
+-- AUTO COLLECT
+-- Cara kerja ASLI game (dibaca dari Growlocks.lua, loop per-frame drop):
+--  * Drop ada di world.dropList(). Tiap frame game mengecek apakah pemain
+--    OVERLAP drop (|drop.x - x| < 0.6 dan tumpang tindih tinggi badan).
+--  * Kalau overlap dan drop sudah "armed", game memanggil world.takeDrop(uid, n):
+--    ping posisi asli (PlayerPos) lalu request "take" ke server. SERVER yang
+--    memutuskan dari posisi itu. Kalau setuju (got > 0): bag:add / addGems +
+--    hotbarAdd, ikon drop berkurang/hilang. Kalau ditolak: drop.refused, game
+--    coba lagi 0.25 detik kemudian. Gems (id 112) tidak perlu "armed".
+--  * Jadi cara yang sah hanya satu: BERADA di atas drop. Script tidak memalsukan
+--    posisi dan tidak memanggil takeDrop dari jauh.
 --
--- Cara kerja ASLI game (dipelajari dari Growlocks.lua): berdiri dekat drop
--- tidak langsung "nempel" ke inventory. Tiap frame game mengecek jarak lalu
--- men-"arm" drop itu, baru pada frame berikutnya memanggil world.takeDrop
--- (request ASYNC ke server, lengkap dengan ping posisi sendiri) -- dan HANYA
--- kalau server setuju (v1237 "got" > 0), tabel bag lokal (v_u_52) ditambah
--- lewat :add(...) dan ikon drop baru hilang/berkurang. Kalau server menolak
--- (posisi dianggap tidak meyakinkan, backpack penuh, dsb), ikon drop TETAP
--- ADA dan game otomatis coba lagi di frame berikutnya (ada jeda tunggu
--- "refused" 0.25 detik sebelum coba lagi).
---
--- PERBAIKAN dari versi lama: dulu hanya menunggu 0.8 detik lalu anggap
--- "hilang dari dropList = berhasil diambil". Itu kurang lama untuk siklus
--- arm -> request -> balasan server di atas, dan TIDAK memverifikasi item
--- benar-benar bertambah di inventory -- bisa membuat Auto Farm diam-diam
--- kehilangan beberapa drop (persis keluhan "item drop ga masuk inventory").
--- Sekarang: tunggu lebih lama (bisa dipanjangkan lewat Config kalau perlu),
--- dan verifikasi lewat DUA tanda: (a) drop hilang dari dropList(), DAN/ATAU
--- (b) jumlah item itu di backpack benar-benar bertambah (CountItem).
-local function FarmCollect(world, anchor, alive)
+-- Yang dilakukan script (tanpa teleport antar drop):
+--  1) TRACKER: sejak mulai break, tiap drop baru dicatat tile asalnya (tile
+--     tempat pertama kali terlihat). Drop dari tile hijau tetap ikut walau
+--     jatuh ke bawah. Drop di luar tile hijau diabaikan.
+--  2) Target = drop yang sekarang ada di tile hijau, ATAU lahir dari tile hijau.
+--  3) Satu pemberhentian per TILE (bukan per drop), urut terdekat. Bergerak 1 tile
+--     tiap langkah lewat jalur yang bisa dilewati, dengan kecepatan jalan asli
+--     game (7.2 tile/dtk; dipakai 6.5), bukan loncat.
+--  4) Di tiap tile tunggu sampai sistem collect game mengambil SEMUA drop di sana.
+--  5) VERIFIKASI: ulangi sampai tidak ada target tersisa (maks 4 putaran / 30 dtk).
+--     Sisa yang tidak bisa diambil dilaporkan (backpack penuh / terhalang).
+--  6) Terakhir berjalan kembali ke posisi awal.
+----------------------------------------------------------------------
+local FARM_WALK_SPEED = 6.5 -- tile per detik (jalan asli game 7.2)
+
+-- Tracker: pantau drop baru sejak break dimulai
+local function FarmStartTracker(world, cells, alive)
+    local tracker = { green = {}, origin = {}, before = {}, stop = false }
+    for _, cell in ipairs(cells) do
+        tracker.green[cell.y * world.w + cell.x] = true
+    end
     local ok, list = pcall(world.dropList)
-    if not ok or type(list) ~= "table" then
-        return 0
-    end
-    -- hanya kolom tile yang dipilih di grid 5x5
-    local columns = {}
-    for key, on in pairs(cfg.farmGrid) do
-        local dx, dy = tostring(key):match("^(-?%d+),(-?%d+)$")
-        dx, dy = tonumber(dx), tonumber(dy)
-        if on and dx and dy and math.abs(dx) <= 2 and math.abs(dy) <= 2 then
-            columns[anchor.x + dx] = true
+    if ok and type(list) == "table" then
+        for _, drop in ipairs(list) do
+            tracker.before[drop] = true
         end
     end
-    local targets = {}
-    for _, drop in ipairs(list) do
-        if type(drop) == "table" and type(drop.x) == "number" and type(drop.y) == "number" and not drop.pending
-            and columns[math.floor(drop.x)] and math.abs(math.floor(drop.y) - anchor.y) <= 2 then
-            table.insert(targets, drop)
-        end
-    end
-    local picked = 0
-    for _, drop in ipairs(targets) do
-        if not alive() then
-            break
-        end
-        local beforeN = (type(drop.id) == "number") and CountItem(drop.id) or nil
-        pcall(world.goTo, math.floor(drop.x), math.floor(drop.y))
-        local started = os.clock()
-        local gotIt = false
-        while alive() and os.clock() - started < 3.5 do
+    task.spawn(function()
+        while not tracker.stop and alive() do
             local okList, current = pcall(world.dropList)
-            local stillThere = okList and type(current) == "table" and table.find(current, drop)
-            if not stillThere then
-                gotIt = true
-                break
-            end
-            if beforeN ~= nil then
-                local nowN = CountItem(drop.id)
-                if nowN ~= nil and nowN > beforeN then
-                    gotIt = true
-                    break
+            if okList and type(current) == "table" then
+                for _, drop in ipairs(current) do
+                    if type(drop) == "table" and not tracker.before[drop] and tracker.origin[drop] == nil
+                        and type(drop.x) == "number" and type(drop.y) == "number" then
+                        tracker.origin[drop] = math.floor(drop.y) * world.w + math.floor(drop.x)
+                    end
                 end
             end
-            -- berdiri diam di atas drop supaya loop "arm" milik game tetap
-            -- menganggap kita dekat (sekaligus mengirim ulang permintaan
-            -- goTo murah, kalau-kalau posisi tergeser oleh sebab lain)
-            task.wait(0.1)
+            task.wait(0.03)
         end
-        if gotIt then
+    end)
+    return tracker
+end
+
+-- Drop yang harus diambil: ada di tile hijau sekarang, atau lahir dari tile hijau
+local function FarmTargets(world, tracker)
+    local out = {}
+    local ok, list = pcall(world.dropList)
+    if not ok or type(list) ~= "table" then
+        return out
+    end
+    for _, drop in ipairs(list) do
+        if type(drop) == "table" and type(drop.x) == "number" and type(drop.y) == "number"
+            and not drop.pending and not drop.display then
+            local key = math.floor(drop.y) * world.w + math.floor(drop.x)
+            local origin = tracker.origin[drop]
+            if tracker.green[key] or (origin ~= nil and tracker.green[origin]) then
+                table.insert(out, drop)
+            end
+        end
+    end
+    return out
+end
+
+local function FarmDropTile(drop)
+    return math.floor(drop.x), math.floor(drop.y)
+end
+
+-- Backpack tidak muat item ini? (gems selalu muat)
+local function FarmBagFull(drop)
+    if drop.id == 112 then
+        return false
+    end
+    local bag = FarmBag()
+    if not bag then
+        return false
+    end
+    local ok, room = pcall(function()
+        return bag:room(drop.id)
+    end)
+    return ok and type(room) == "number" and room <= 0
+end
+
+-- Jalur terpendek (4 arah) lewat tile yang bisa dilewati, dibatasi kotak kecil
+local function FarmFindPath(world, sx, sy, tx, ty)
+    if not FarmPassable(world, tx, ty) then
+        return nil
+    end
+    local W = world.w
+    local minX, maxX = math.min(sx, tx) - 6, math.max(sx, tx) + 6
+    local minY, maxY = math.min(sy, ty) - 6, math.max(sy, ty) + 6
+    local startKey, goalKey = sy * W + sx, ty * W + tx
+    local parent = { [startKey] = -1 }
+    local queue, head = { startKey }, 1
+    local found = startKey == goalKey
+    while head <= #queue and not found do
+        local key = queue[head]
+        head += 1
+        local x, y = key % W, key // W
+        for _, step in ipairs({ { 0, -1 }, { 0, 1 }, { -1, 0 }, { 1, 0 } }) do
+            local nx, ny = x + step[1], y + step[2]
+            local nk = ny * W + nx
+            if parent[nk] == nil and nx >= minX and nx <= maxX and ny >= minY and ny <= maxY
+                and FarmPassable(world, nx, ny) then
+                parent[nk] = key
+                if nk == goalKey then
+                    found = true
+                    break
+                end
+                table.insert(queue, nk)
+            end
+        end
+    end
+    if not found then
+        return nil
+    end
+    local path, key = {}, goalKey
+    while key ~= startKey do
+        table.insert(path, 1, { x = key % W, y = key // W })
+        key = parent[key]
+    end
+    return path
+end
+
+-- Berjalan 1 tile per langkah dengan kecepatan jalan game. Return true kalau sampai.
+local function FarmWalkTo(world, tx, ty, alive)
+    local sx, sy = GetTile()
+    if not sx then
+        return false
+    end
+    if sx == tx and sy == ty then
+        return true
+    end
+    local path = FarmFindPath(world, sx, sy, tx, ty)
+    if not path then
+        return false
+    end
+    local gap = 1 / FARM_WALK_SPEED
+    local nextAt = os.clock()
+    for _, node in ipairs(path) do
+        if not alive() then
+            return false
+        end
+        local now = os.clock()
+        if now < nextAt then
+            task.wait(nextAt - now)
+        end
+        nextAt = math.max(os.clock(), nextAt) + gap
+        pcall(world.goTo, node.x, node.y)
+    end
+    return true
+end
+
+-- Return: jumlah drop yang berhasil diambil, ringkasan sisa { total, full, blocked }
+local function FarmCollect(world, anchor, alive, tracker)
+    -- tunggu drop muncul (server yang membuatnya) sampai jumlahnya stabil
+    local started, last, stableSince = os.clock(), -1, os.clock()
+    while alive() and os.clock() - started < 0.8 do
+        local count = #FarmTargets(world, tracker)
+        if count ~= last then
+            last, stableSince = count, os.clock()
+        elseif count > 0 and os.clock() - stableSince >= 0.2 then
+            break
+        elseif count == 0 and os.clock() - started >= 0.5 then
+            break
+        end
+        task.wait(0.05)
+    end
+
+    local seen, unreachable, moved = {}, {}, false
+    local deadline = os.clock() + 30
+    local pass = 0
+    while alive() and pass < 4 and os.clock() < deadline do
+        local list = {}
+        for _, drop in ipairs(FarmTargets(world, tracker)) do
+            seen[drop] = true
+            local tx, ty = FarmDropTile(drop)
+            if not unreachable[ty * world.w + tx] and not FarmBagFull(drop) then
+                table.insert(list, drop)
+            end
+        end
+        if #list == 0 then
+            break
+        end
+        pass += 1
+
+        -- satu pemberhentian per tile
+        local stops, remaining = {}, {}
+        for _, drop in ipairs(list) do
+            local tx, ty = FarmDropTile(drop)
+            local key = ty * world.w + tx
+            if not stops[key] then
+                stops[key] = { x = tx, y = ty, key = key }
+                table.insert(remaining, stops[key])
+            end
+        end
+        local cx, cy = GetTile()
+        cx, cy = cx or anchor.x, cy or anchor.y
+        while #remaining > 0 and alive() and os.clock() < deadline do
+            local bestIndex, bestDist = 1, math.huge
+            for i, stop in ipairs(remaining) do
+                local dist = math.abs(stop.x - cx) + math.abs(stop.y - cy)
+                if dist < bestDist then
+                    bestIndex, bestDist = i, dist
+                end
+            end
+            local stop = table.remove(remaining, bestIndex)
+            if FarmWalkTo(world, stop.x, stop.y, alive) then
+                moved = true
+                cx, cy = stop.x, stop.y
+                -- tunggu sistem collect game mengambil SEMUA drop di tile ini
+                local waited = os.clock()
+                while alive() and os.clock() - waited < 1.5 do
+                    local here = 0
+                    for _, drop in ipairs(FarmTargets(world, tracker)) do
+                        local tx, ty = FarmDropTile(drop)
+                        if tx == stop.x and ty == stop.y and not FarmBagFull(drop) then
+                            here += 1
+                        end
+                    end
+                    if here == 0 then
+                        break
+                    end
+                    task.wait(0.05)
+                end
+            else
+                unreachable[stop.key] = true
+            end
+        end
+    end
+    tracker.stop = true
+
+    -- hasil + verifikasi akhir
+    local picked = 0
+    local okList, current = pcall(world.dropList)
+    for drop in pairs(seen) do
+        if not (okList and type(current) == "table" and table.find(current, drop)) then
             picked += 1
         end
     end
-    if #targets > 0 then
-        pcall(world.goTo, anchor.x, anchor.y)
+    local left = { total = 0, full = 0, blocked = 0 }
+    for _, drop in ipairs(FarmTargets(world, { green = tracker.green, origin = tracker.origin })) do
+        left.total += 1
+        if FarmBagFull(drop) then
+            left.full += 1
+        else
+            local tx, ty = FarmDropTile(drop)
+            if unreachable[ty * world.w + tx] then
+                left.blocked += 1
+            end
+        end
     end
-    return picked
+
+    -- kembali ke posisi awal (berjalan, bukan loncat)
+    if moved and alive() then
+        if not FarmWalkTo(world, anchor.x, anchor.y, alive) then
+            pcall(world.goTo, anchor.x, anchor.y)
+        end
+    end
+    return picked, left
 end
 
 local function FarmCycle(token)
@@ -2251,6 +2735,8 @@ local function FarmCycle(token)
     --    dengan jeda minimal 0.22 dtk. Satu block dipukul terus sampai pecah, baru
     --    paket tile id 0 dikirim (game melakukannya persis saat damage penuh).
     Farm.status = "Break " .. (ItemName(id) or id)
+    -- pantau drop baru dari tile hijau sejak break dimulai (drop bisa jatuh ke bawah)
+    local tracker = FarmStartTracker(world, cells, alive)
     local perPunch = FarmPunchPower()
     local needed = hits * 6
     local punchGap = math.max(FARM_PUNCH_MIN, delay)
@@ -2292,8 +2778,16 @@ local function FarmCycle(token)
     -- 3) COLLECT
     if cfg.farmCollect and alive() then
         Farm.status = "Collect"
-        task.wait(0.25) -- drop muncul sedikit setelah tile pecah
-        Farm.stats.picked += FarmCollect(world, anchor, alive)
+        local picked, left = FarmCollect(world, anchor, alive, tracker)
+        Farm.stats.picked += picked
+        Farm.stats.missed = left.total
+        if left.total > 0 and os.clock() - (Farm.lastMissNotify or 0) > 5 then
+            Farm.lastMissNotify = os.clock()
+            Notify(string.format("Auto Collect: %d drop belum terambil (backpack penuh: %d, terhalang: %d).",
+                left.total, left.full, left.blocked))
+        end
+    else
+        tracker.stop = true
     end
 
     Farm.stats.cycles += 1
@@ -2317,6 +2811,9 @@ function Farm.Start()
     if Farm.on then
         return true
     end
+    if Dirt.on then
+        Dirt.Stop("Auto Farm dinyalakan")
+    end
     local world = FindWorld()
     if not InWorld(world) then
         Notify("Belum masuk world.")
@@ -2337,7 +2834,7 @@ function Farm.Start()
         facing = facing or 1,
         world = CurrentWorldName(),
     }
-    Farm.stats = { cycles = 0, placed = 0, broken = 0, picked = 0 }
+    Farm.stats = { cycles = 0, placed = 0, broken = 0, picked = 0, missed = 0 }
     Farm.token += 1
     local token = Farm.token
     Farm.on = true
@@ -2360,6 +2857,695 @@ function Farm.Start()
     end)
     Notify("Auto Farm aktif.")
     return true
+end
+
+----------------------------------------------------------------------
+-- AUTO DIRT FARM
+-- Dipelajari dari Growlocks.lua:
+--  * BREAK  : tiap pukulan = paket hit (sendHit) + act; saat damage penuh baru paket
+--             tile id 0. fg dihancurkan dulu, lalu bg (cave background) di tile yang sama.
+--  * PLACE  : setTile + bag.remove. Block biasa hanya di tile fg kosong. SEED hanya di
+--             tile fg kosong yang lantainya solid (fungsi cek penempatan game).
+--  * TREE   : seed yang ditanam = tile fg berisi id seed; matang saat
+--             waktuServer >= waktuTanam + item.grow. PANEN = setTile fg id 0 saat matang
+--             (kalau dipukul belum matang, tree malah rusak).
+-- Alur:
+--  1) Jalan ke ujung baris (pastikan depan tidak bolong), break 2 blok ke bawah,
+--     lalu break lurus sampai ujung (block + background). Di ujung: break 1 blok ke
+--     atas, break 2 blok ke bawah, sapu arah sebaliknya ... sampai bedrock.
+--  2) Respawn, jalan ke ujung lantai yang aman (kolom ujung yang sudah dibreak dilewati).
+--  3) Place dirt di atas player sampai ujung, teleport naik ke baris yang barusan
+--     di-place, ulangi sampai paling atas.
+--  4) Kalau dirt habis: tanam Dirt Seed (20-50), tunggu matang, panen otomatis, ambil
+--     drop, lalu lanjut place.
+----------------------------------------------------------------------
+do
+    local function DirtBlockId()
+        local id = math.floor(tonumber(cfg.dirtId) or 0)
+        if id > 0 then
+            return id
+        end
+        return FindItemIdByName("dirt")
+    end
+
+    local function DirtSeedId()
+        local id = math.floor(tonumber(cfg.dirtSeedId) or 0)
+        if id > 0 then
+            return id
+        end
+        local db = GetItemDB()
+        if not db then
+            return nil
+        end
+        local found = nil
+        for itemId, item in pairs(db) do
+            if type(itemId) == "number" and type(item) == "table" and item.kind == "seed"
+                and type(item.name) == "string" then
+                local lower = item.name:lower()
+                if lower == "dirt seed" then
+                    return itemId
+                end
+                if not found and lower:find("dirt", 1, true) then
+                    found = itemId
+                end
+            end
+        end
+        return found
+    end
+    Dirt.BlockId, Dirt.SeedId = DirtBlockId, DirtSeedId
+
+    local function RunDirt(token)
+        local function alive()
+            return Dirt.token == token
+        end
+        local world = FindWorld()
+        if not InWorld(world) then
+            return false, "World tidak ditemukan"
+        end
+        local worldName = CurrentWorldName()
+        local net = FarmNet()
+        if not net then
+            return false, "Modul Net game tidak ditemukan"
+        end
+        local others = FarmOthers()
+        if not others then
+            return false, "Fungsi hit game (sendHit) tidak ditemukan"
+        end
+        local db = GetItemDB()
+        if not db then
+            return false, "ItemDB tidak ditemukan"
+        end
+        local W, H = world.w, world.h
+        local dirtId = DirtBlockId()
+        if cfg.dirtPlace and not dirtId then
+            return false, "ID dirt tidak ketemu (isi manual di tab Dirt)"
+        end
+        local function punchGap()
+            return math.max(FARM_PUNCH_MIN, tonumber(cfg.dirtDelay) or 0.22)
+        end
+        local function placeGap()
+            return math.max(FARM_PLACE_MIN, tonumber(cfg.dirtDelay) or 0.22)
+        end
+        local function stillHere()
+            return alive() and CurrentWorldName() == worldName
+        end
+
+        ------------------------------------------------------------------
+        -- Break
+        ------------------------------------------------------------------
+        local function BreakLayer(layer, x, y)
+            if x < 0 or y < 0 or x >= W or y >= H then
+                return false, "batas"
+            end
+            local id = FarmTile(world, layer, x, y)
+            if id == nil then
+                return false, "batas"
+            end
+            if id == 0 then
+                return true
+            end
+            local hits = FarmHits(id)
+            if not hits then
+                return false, "keras" -- bedrock / tidak bisa dihancurkan
+            end
+            if not FarmMayBuild(world, x, y) then
+                return false, "lock"
+            end
+            local perPunch = FarmPunchPower()
+            local needed = hits * 6
+            local progress, guard = 0, 0
+            while alive() and FarmTile(world, layer, x, y) == id and guard < 200 do
+                guard += 1
+                if not FarmInRange(false, x, y) then
+                    return false, "jauh"
+                end
+                FarmGate(punchGap())
+                if not alive() then
+                    return false, "stop"
+                end
+                pcall(others.sendHit, x, y)
+                FarmAct(net, x, y)
+                progress += perPunch
+                if progress >= needed then
+                    FarmSetTile(net, world, layer, x, y, 0)
+                    Dirt.stats.broken += 1
+                    break
+                end
+            end
+            return FarmTile(world, layer, x, y) == 0, "gagal"
+        end
+
+        -- hancurkan block (fg) lalu cave background (bg) di satu tile
+        local function ClearCell(x, y)
+            local okFg, why = BreakLayer("fg", x, y)
+            if not okFg then
+                return false, why
+            end
+            BreakLayer("bg", x, y) -- bg yang tidak bisa dihancurkan diabaikan
+            return true
+        end
+
+        ------------------------------------------------------------------
+        -- Gerak
+        ------------------------------------------------------------------
+        local gapWalk = 1 / FARM_WALK_SPEED
+        local lastStep = 0
+        local function StepTo(x, y)
+            local now = os.clock()
+            if now - lastStep < gapWalk then
+                task.wait(gapWalk - (now - lastStep))
+            end
+            lastStep = os.clock()
+            pcall(world.goTo, x, y)
+        end
+
+        -- tunggu pemain berhenti (jatuh dulu kalau tile di bawah kosong)
+        local function Settle()
+            local lx, ly = GetTile()
+            local still, started = os.clock(), os.clock()
+            while alive() and os.clock() - started < 2.5 do
+                task.wait(0.06)
+                local cx, cy = GetTile()
+                if cx ~= lx or cy ~= ly then
+                    lx, ly = cx, cy
+                    still = os.clock()
+                elseif os.clock() - still >= 0.18 then
+                    break
+                end
+            end
+            return lx, ly
+        end
+
+        local function Solid(x, y)
+            local id = FarmTile(world, "fg", x, y)
+            if not id or id == 0 then
+                return false
+            end
+            local item = db[id]
+            return type(item) == "table" and (item.solid == true or item.platform == true)
+        end
+        -- tempat berdiri aman = kosong + lantai solid (tidak bolong)
+        local function StandSafe(x, y)
+            return FarmPassable(world, x, y) and Solid(x, y + 1)
+        end
+        local function NearestStand(x, y)
+            for d = 0, W do
+                if StandSafe(x - d, y) then
+                    return x - d
+                end
+                if StandSafe(x + d, y) then
+                    return x + d
+                end
+            end
+            return nil
+        end
+        local function Segment(x, y)
+            local l, r = x, x
+            while StandSafe(l - 1, y) do
+                l -= 1
+            end
+            while StandSafe(r + 1, y) do
+                r += 1
+            end
+            return l, r
+        end
+
+        local function CollectRow(y)
+            if not cfg.dirtCollect or not alive() then
+                return
+            end
+            local cells = {}
+            for x = 0, W - 1 do
+                table.insert(cells, { x = x, y = y })
+                table.insert(cells, { x = x, y = y + 1 })
+            end
+            local tracker = FarmStartTracker(world, cells, alive)
+            local cx, cy = GetTile()
+            if not cx then
+                tracker.stop = true
+                return
+            end
+            Dirt.status = "Collect"
+            local picked = FarmCollect(world, { x = cx, y = cy }, alive, tracker)
+            Dirt.stats.picked += picked
+        end
+
+        ------------------------------------------------------------------
+        -- FASE 1: DIG
+        ------------------------------------------------------------------
+        local sx, sy, facing = GetGridState()
+        if not sx then
+            return false, "Posisi pemain tidak terbaca"
+        end
+        local px, py = math.floor(sx), math.floor(sy - 0.475)
+        local startRow = py
+
+        local function RunLen(d)
+            local n = 0
+            while StandSafe(px + d * (n + 1), py) do
+                n += 1
+            end
+            return n
+        end
+        local walkDir = facing or 1
+        if RunLen(walkDir) == 0 and RunLen(-walkDir) > 0 then
+            walkDir = -walkDir
+        end
+        local ex = px + walkDir * RunLen(walkDir)
+        Dirt.status = "Jalan ke ujung"
+        if ex ~= px then
+            for x = px + walkDir, ex, walkDir do
+                if not stillHere() then
+                    return true
+                end
+                StepTo(x, py)
+            end
+            Settle()
+        end
+
+        local rows, tunnel = {}, {}
+        local dir = -walkDir
+
+        -- break lurus ke arah dir sampai ujung (block + background)
+        local function Sweep(d)
+            for _ = 1, W + 5 do
+                if not stillHere() then
+                    return
+                end
+                local x, y = GetTile()
+                if not x then
+                    return
+                end
+                local nx = x + d
+                if nx < 0 or nx >= W then
+                    return
+                end
+                Dirt.status = string.format("Break lurus (%d,%d)", nx, y)
+                if not ClearCell(nx, y) then
+                    return -- ujung (block keras / lock)
+                end
+                StepTo(nx, y)
+                local cx = Settle()
+                if cx ~= nx then
+                    return
+                end
+            end
+        end
+
+        local reachedBottom = false
+        for _ = 1, H + 5 do
+            if not stillHere() then
+                return true
+            end
+            -- break 2 blok ke bawah (background ikut)
+            local moved = 0
+            for _ = 1, 2 do
+                local x, y = GetTile()
+                if not x then
+                    return false, "Posisi hilang"
+                end
+                if y + 1 >= H then
+                    break
+                end
+                Dirt.status = string.format("Break bawah (%d,%d)", x, y + 1)
+                if not ClearCell(x, y + 1) then
+                    break
+                end
+                local _, ny = Settle()
+                if ny and ny > y then
+                    moved += 1
+                else
+                    break
+                end
+            end
+            if moved == 0 then
+                reachedBottom = true
+                break
+            end
+
+            local x, y = GetTile()
+            if not tunnel[y] then
+                tunnel[y] = true
+                table.insert(rows, y)
+                Dirt.stats.rows = #rows
+            end
+            BreakLayer("bg", x, y)
+            Sweep(dir)
+            if not stillHere() then
+                return true
+            end
+            local _, cy = GetTile()
+            CollectRow(cy or y)
+            if moved < 2 then
+                reachedBottom = true
+                break
+            end
+
+            -- di ujung: break 1 blok atas dulu, baru turun lagi
+            local ax, ay = GetTile()
+            if ax and ay > 0 then
+                Dirt.status = string.format("Break atas (%d,%d)", ax, ay - 1)
+                ClearCell(ax, ay - 1)
+            end
+            dir = -dir
+        end
+        if #rows == 0 then
+            return false, "Tidak ada yang bisa dihancurkan di bawah posisimu"
+        end
+        if not stillHere() then
+            return true
+        end
+
+        ------------------------------------------------------------------
+        -- FASE 2: RESPAWN
+        ------------------------------------------------------------------
+        Dirt.status = "Respawn"
+        do
+            local bx, by = GetTile()
+            local fired = false
+            local api = FindApi()
+            if api and type(rawget(api, "respawn")) == "function" then
+                fired = pcall(api.respawn)
+            end
+            if not fired then
+                local _, die = GodFindDeath(world)
+                if die then
+                    fired = pcall(die)
+                end
+            end
+            local started = os.clock()
+            while alive() and os.clock() - started < 8 do
+                task.wait(0.25)
+                local cx, cy = GetTile()
+                if cx and bx and (math.abs(cx - bx) + math.abs(cy - by)) >= 2 then
+                    break
+                end
+            end
+            task.wait(0.5)
+            local cx, cy = GetTile()
+            if cx and bx and (math.abs(cx - bx) + math.abs(cy - by)) < 2 then
+                local okS, sp = pcall(function()
+                    return world.spawn
+                end)
+                if okS and typeof(sp) == "Vector2" then
+                    pcall(world.goTo, math.floor(sp.X), math.floor(sp.Y))
+                    task.wait(0.4)
+                end
+            end
+        end
+        if not stillHere() then
+            return true
+        end
+
+        ------------------------------------------------------------------
+        -- FASE 3: PLACE DIRT (bawah -> atas) + tanam & panen kalau dirt habis
+        ------------------------------------------------------------------
+        if not cfg.dirtPlace then
+            Dirt.status = "Selesai"
+            return true
+        end
+
+        local function RemoveOne(id)
+            local bag = FarmBag()
+            if bag and type(bag.remove) == "function" then
+                pcall(bag.remove, bag, id, 1)
+            end
+        end
+
+        local function Reach()
+            local range = 2.5
+            local inv = FindInventory()
+            if inv then
+                local okR, value = pcall(function()
+                    return inv.buildRange()
+                end)
+                if okR and type(value) == "number" then
+                    range = value
+                end
+            end
+            return math.clamp(math.floor(range - 0.05), 1, 6)
+        end
+
+        local outOfDirt = false
+        local function DirtLeft()
+            return RealCount(dirtId)
+        end
+
+        -- place dirt di baris atas player (y-1) untuk kolom x-reach .. x+reach
+        local function PlaceAbove(x, y)
+            local ty = y - 1
+            local reach = Reach()
+            for c = x - reach, x + reach do
+                if not stillHere() or outOfDirt then
+                    return
+                end
+                if c >= 0 and c < W and ty >= 0 and FarmTile(world, "fg", c, ty) == 0
+                    and FarmMayBuild(world, c, ty) and FarmInRange(true, c, ty) then
+                    local left = DirtLeft()
+                    if left ~= nil and left <= 0 then
+                        outOfDirt = true
+                        return
+                    end
+                    FarmGate(placeGap())
+                    if FarmSetTile(net, world, "fg", c, ty, dirtId) then
+                        RemoveOne(dirtId)
+                        Dirt.stats.placed += 1
+                    end
+                end
+            end
+        end
+
+        -- tanam seed di baris r (segmen l..rr), tunggu matang, panen, ambil drop.
+        -- return true kalau dirt tersedia lagi
+        local function GrowDirt(r, l, rr)
+            local seedId = DirtSeedId()
+            if not seedId then
+                Notify("Dirt Seed tidak ditemukan. Isi ID seed di tab Dirt.")
+                return false
+            end
+            local want = math.clamp(math.floor(tonumber(cfg.dirtSeedCount) or 30), 1, 50)
+            local have = RealCount(seedId)
+            if have ~= nil then
+                want = math.min(want, have)
+            end
+            if want <= 0 then
+                Notify("Dirt habis dan tidak ada Dirt Seed di inventory.")
+                return false
+            end
+            local item = db[seedId]
+            local grow = (type(item) == "table" and tonumber(item.grow)) or 0
+            local planted = {} -- [x] = waktu tanam (waktu server)
+            local count = 0
+
+            -- tanam: jalan sepanjang segmen, tanam semua tile kosong dalam jangkauan
+            local reach = Reach()
+            local c = math.clamp(select(1, GetTile()) or l, l, rr)
+            local visited = 0
+            while stillHere() and count < want and visited < (rr - l + 3) do
+                visited += 1
+                Dirt.status = string.format("Tanam seed %d/%d", count, want)
+                StepTo(c, r)
+                Settle()
+                local ax, ay = GetTile()
+                if ax and ay == r then
+                    for tx = ax - reach, ax + reach do
+                        if count >= want or not stillHere() then
+                            break
+                        end
+                        if tx >= l - 1 and tx <= rr + 1 and planted[tx] == nil
+                            and FarmTile(world, "fg", tx, r) == 0 and Solid(tx, r + 1)
+                            and FarmMayBuild(world, tx, r) and FarmInRange(true, tx, r) then
+                            FarmGate(placeGap())
+                            if FarmSetTile(net, world, "fg", tx, r, seedId) then
+                                RemoveOne(seedId)
+                                planted[tx] = workspace:GetServerTimeNow()
+                                count += 1
+                                Dirt.stats.planted += 1
+                            end
+                        end
+                    end
+                end
+                c += reach * 2 + 1
+                if c > rr then
+                    break
+                end
+            end
+            if count == 0 then
+                Notify("Tidak ada tempat menanam seed di baris ini.")
+                return false
+            end
+
+            -- tunggu semua tree matang
+            local ripeAt = 0
+            for _, at in pairs(planted) do
+                ripeAt = math.max(ripeAt, at + grow + 1)
+            end
+            while stillHere() do
+                local remain = ripeAt - workspace:GetServerTimeNow()
+                if remain <= 0 then
+                    break
+                end
+                Dirt.status = string.format("Menunggu tree matang %d:%02d", remain // 60, math.floor(remain % 60))
+                task.wait(0.5)
+            end
+            if not stillHere() then
+                return false
+            end
+
+            -- panen: setTile fg id 0 pada tree yang matang
+            local xs = {}
+            for tx in pairs(planted) do
+                table.insert(xs, tx)
+            end
+            table.sort(xs)
+            for _, tx in ipairs(xs) do
+                if not stillHere() then
+                    return false
+                end
+                local id = FarmTile(world, "fg", tx, r)
+                if id == seedId then
+                    Dirt.status = string.format("Panen tree (%d,%d)", tx, r)
+                    if not FarmInRange(false, tx, r) then
+                        StepTo(tx, r)
+                        Settle()
+                    end
+                    FarmGate(punchGap())
+                    if FarmSetTile(net, world, "fg", tx, r, 0) then
+                        Dirt.stats.harvested += 1
+                    end
+                end
+            end
+            CollectRow(r)
+            local left = DirtLeft()
+            return left == nil or left > 0
+        end
+
+        local function FillRow(r)
+            local cx = GetTile()
+            local x = NearestStand(cx or px, r)
+            if not x then
+                return
+            end
+            Dirt.status = string.format("Teleport ke baris %d", r)
+            pcall(world.goTo, x, r)
+            task.wait(math.max(0.15, 1 / FARM_WALK_SPEED))
+            Settle()
+            if tunnel[r - 1] or r - 1 <= startRow then
+                return
+            end
+            local gx = GetTile() or x
+            local l, rr = Segment(gx, r)
+            local a, b, step = l, rr, 3
+            if math.abs(gx - rr) < math.abs(gx - l) then
+                a, b, step = rr, l, -3
+            end
+            local c = a
+            while stillHere() and not outOfDirt do
+                local left = DirtLeft()
+                if left ~= nil and left <= 0 then
+                    if cfg.dirtSeed and GrowDirt(r, l, rr) then
+                        -- dirt sudah ada lagi: lanjut
+                    else
+                        outOfDirt = true
+                        break
+                    end
+                end
+                Dirt.status = string.format("Place dirt baris %d (x %d)", r - 1, c)
+                StepTo(c, r)
+                Settle()
+                local ax, ay = GetTile()
+                if ax and ay == r then
+                    PlaceAbove(ax, ay)
+                end
+                if c == b then
+                    break
+                end
+                if step > 0 then
+                    c = math.min(b, c + step)
+                else
+                    c = math.max(b, c + step)
+                end
+            end
+        end
+
+        for i = #rows, 1, -1 do
+            if not stillHere() or outOfDirt then
+                break
+            end
+            FillRow(rows[i])
+        end
+        if not stillHere() then
+            return true
+        end
+        if outOfDirt then
+            return false, "Dirt habis"
+        end
+
+        -- naik ke baris paling atas yang sudah di-place
+        local cx = GetTile()
+        local topX = NearestStand(cx or px, startRow)
+        if topX then
+            Dirt.status = "Teleport ke atas"
+            pcall(world.goTo, topX, startRow)
+        end
+        Dirt.status = "Selesai"
+        return true
+    end
+
+    function Dirt.Stop(reason)
+        local was = Dirt.on
+        Dirt.on = false
+        Dirt.token += 1
+        Dirt.status = reason or "Mati"
+        if was and reason then
+            Notify("Auto Dirt Farm: " .. reason)
+        end
+    end
+
+    function Dirt.Start()
+        if Dirt.on then
+            return true
+        end
+        local world = FindWorld()
+        if not InWorld(world) then
+            Notify("Belum masuk world.")
+            return false
+        end
+        if not GetGridState() then
+            Notify("Posisi pemain tidak terbaca. " .. Diag())
+            return false
+        end
+        if Farm.on then
+            Farm.Stop("Auto Dirt Farm dinyalakan")
+        end
+        Dirt.stats = { rows = 0, broken = 0, placed = 0, planted = 0, harvested = 0, picked = 0 }
+        Dirt.token += 1
+        local token = Dirt.token
+        Dirt.on = true
+        Dirt.status = "Mulai"
+        task.spawn(function()
+            local okRun, ok, reason = pcall(RunDirt, token)
+            if Dirt.token ~= token then
+                return
+            end
+            Dirt.on = false
+            if not okRun then
+                Dirt.status = "Error"
+                Notify("Auto Dirt Farm error: " .. tostring(ok))
+            elseif not ok then
+                Dirt.status = reason or "Berhenti"
+                Notify("Auto Dirt Farm: " .. tostring(reason or "berhenti"))
+            else
+                if Dirt.status ~= "Selesai" then
+                    Dirt.status = "Mati"
+                end
+                Notify(string.format("Auto Dirt Farm selesai: %d baris, %d pecah, %d place, %d ditanam, %d dipanen.",
+                    Dirt.stats.rows, Dirt.stats.broken, Dirt.stats.placed, Dirt.stats.planted, Dirt.stats.harvested))
+            end
+        end)
+        Notify("Auto Dirt Farm aktif.")
+        return true
+    end
 end
 
 ----------------------------------------------------------------------
@@ -2855,7 +4041,7 @@ local function BuildMovePage(page)
         .. "(kiri/kanan, lompat = naik). Saat Noclip aktif ada tombol Turun melayang di layar: tahan untuk turun.")
 
     AddSection(page, "Aman")
-    AddToggle(page, "God mode", function() return godOn end, function(on)
+    AddToggle(page, "God mode (anti mental/mati/lava/spike)", function() return godOn end, function(on)
         if on then
             StartGod()
         else
@@ -2863,6 +4049,53 @@ local function BuildMovePage(page)
         end
     end)
     AddLabel(page, "God: lava, spike, api tidak melukai (client saja).")
+
+    AddSection(page, "Tampilan & jangkauan")
+    AddToggle(page, "Zoom out besar", function() return Zoom.on end, function(on)
+        cfg.zoomOn = on
+        SaveConfig()
+        if on then
+            Zoom.Start()
+        else
+            Zoom.Stop()
+        end
+    end)
+    AddInput(page, "Zoom min (0.05-0.6)", cfg.zoomMin, "0.2", function(text, box)
+        local value = tonumber(text)
+        if not value then
+            box.Text = tostring(cfg.zoomMin)
+            Notify("Isi angka 0.05 sampai 0.6 (makin kecil makin jauh).")
+            return
+        end
+        cfg.zoomMin = math.clamp(value, 0.05, 0.6)
+        box.Text = tostring(cfg.zoomMin)
+        SaveConfig()
+        if Zoom.on then
+            Zoom.Apply()
+        end
+    end)
+    AddToggle(page, "Long punch", function() return LongPunch.on end, function(on)
+        cfg.punchOn = on
+        SaveConfig()
+        if on then
+            LongPunch.Start()
+        else
+            LongPunch.Stop()
+        end
+    end)
+    AddInput(page, "Jarak punch (3-40 tile)", cfg.punchRange, "8", function(text, box)
+        local value = tonumber(text)
+        if not value then
+            box.Text = tostring(cfg.punchRange)
+            Notify("Isi angka 3 sampai 40.")
+            return
+        end
+        cfg.punchRange = math.clamp(value, 3, 40)
+        box.Text = tostring(cfg.punchRange)
+        SaveConfig()
+    end)
+    AddLabel(page, "Zoom out: makin kecil nilainya makin jauh (pakai pinch/scroll seperti biasa). "
+        .. "Long punch: jarak pukul & place diperbesar; server tetap memeriksa jarak sendiri.")
 end
 
 -- Halaman: Setting ------------------------------------------------------
@@ -2933,7 +4166,7 @@ local function BuildSettingsPage(page)
             ui.gui:Destroy()
         end
     end, C.bad)
-    AddLabel(page, "PeexHubs | GrowLock v0.10. Command: " .. cfg.prefix .. "gt, " .. cfg.prefix .. "cd, "
+    AddLabel(page, "PeexHubs | GrowLock v0.14. Command: " .. cfg.prefix .. "gt, " .. cfg.prefix .. "cd, "
         .. cfg.prefix .. "ctp, " .. cfg.prefix .. "noclip, " .. cfg.prefix .. "god, " .. cfg.prefix .. "gstatus")
 end
 
@@ -3129,6 +4362,7 @@ local function BuildFarmPage(page)
         { key = "placed", label = "Place" },
         { key = "broken", label = "Break" },
         { key = "picked", label = "Collect" },
+        { key = "missed", label = "Belum terambil" },
     })
     local function PaintStats()
         labels.status.Text = Farm.status
@@ -3136,6 +4370,7 @@ local function BuildFarmPage(page)
         labels.placed.Text = tostring(Farm.stats.placed)
         labels.broken.Text = tostring(Farm.stats.broken)
         labels.picked.Text = tostring(Farm.stats.picked)
+        labels.missed.Text = tostring(Farm.stats.missed or 0)
     end
     PaintStats()
     table.insert(ui.refreshers, PaintStats)
@@ -3153,6 +4388,277 @@ local function BuildFarmPage(page)
 end
 
 -- Halaman: Visual ------------------------------------------------------
+----------------------------------------------------------------------
+-- IDENTITAS PALSU (nama ID Growlock & title) -- tampilan LOKAL saja
+-- Cara kerja game (dipelajari dari Growlocks.lua):
+--  * Label nama di atas karakter dibuat ulang (redraw) dari
+--      Roles.tagText(Roles.nameOf(player), userId) .. Roles.guildTag(userId)
+--    dan dipanggil lagi tiap atribut Nick / GameName / Title / WornTitle /
+--    DrTitle / Undercover berubah. Warna & animasi memakai Roles.titleOf /
+--    Roles.titleColor / Roles.tagColor (salinan fungsinya disimpan di tabel label).
+--  * Nama yang sama dipakai di: chat /me, daftar /who, pesan World Lock, Flex.
+--  * Jenis title yang disebut langsung di kode game: "legend", "sponsor",
+--    "verified", "og" (nama beranimasi), "cc" (nama pelangi di /me), ditambah
+--    title teks bebas yang diberikan staff, tag staff (admin/dev/owner/mod),
+--    WornTitle dan DrTitle. Daftar LENGKAP ada di modul Roles + ReplicatedStorage
+--    .TitleList, jadi dibaca saat runtime (tombol "Cek daftar title").
+--  * Server tidak dikabari apa pun: pemain lain tetap melihat nama aslimu.
+----------------------------------------------------------------------
+local Identity = {
+    active = false,
+    name = nil,        -- nama palsu yang sedang dipakai (nil = nama asli)
+    kind = nil,        -- nil (title asli) | "none" | "id" | "text"
+    value = nil,
+    hidden = false,
+    patched = false,
+    orig = {},
+    labels = {},
+    labelOrig = {},
+    scanAt = 0,
+    nickSaved = false,
+    nickOrig = nil,
+    titles = nil,
+}
+local HIDDEN_NAME = "[HIDDEN]"
+local GAME_TITLES = { "legend", "sponsor", "verified", "og", "cc" }
+
+-- Kumpulkan jenis title: yang disebut kode game + yang ditemukan di Roles / TitleList
+function Identity.Titles(force)
+    if Identity.titles and not force then
+        return Identity.titles
+    end
+    local seen, list = {}, {}
+    local function add(id, source)
+        if type(id) == "string" and id ~= "" and #id <= 32 and not seen[id:lower()] then
+            seen[id:lower()] = true
+            table.insert(list, { id = id, source = source })
+        end
+    end
+    for _, id in ipairs(GAME_TITLES) do
+        add(id, "kode game")
+    end
+    local roles = Info.Roles()
+    if type(roles) == "table" then
+        for key, value in pairs(roles) do
+            if type(key) == "string" and type(value) == "table" then
+                local lower = key:lower()
+                if lower:find("title", 1, true) or lower:find("badge", 1, true) then
+                    for k, v in pairs(value) do
+                        if type(k) == "string" then
+                            add(k, "Roles." .. key)
+                        elseif type(v) == "string" then
+                            add(v, "Roles." .. key)
+                        end
+                    end
+                end
+            end
+        end
+    end
+    local titleList = ReplicatedStorage:FindFirstChild("TitleList")
+    if titleList then
+        local ok, attrs = pcall(function()
+            return titleList:GetAttributes()
+        end)
+        if ok and type(attrs) == "table" then
+            for _, value in pairs(attrs) do
+                add(value, "TitleList")
+            end
+        end
+    end
+    Identity.titles = list
+    return list
+end
+
+-- Awalan title teks bebas. Boleh pakai kode warna game (`2hijau`` dst).
+local function TitlePrefix(text)
+    if text:find("`", 1, true) then
+        return text .. " "
+    end
+    return "`2" .. text .. "`` "
+end
+
+-- Hitung nama & title yang sedang aktif dari cfg
+local function IdResolve()
+    Identity.hidden = cfg.idHidden == true
+    if Identity.hidden then
+        Identity.name = HIDDEN_NAME
+    else
+        local name = Trim(cfg.idName or "")
+        Identity.name = name ~= "" and name or nil
+    end
+    local text = Trim(cfg.idTitle or "")
+    Identity.kind, Identity.value = nil, nil
+    if text ~= "" then
+        if text:lower() == "none" then
+            Identity.kind = "none"
+        else
+            for _, entry in ipairs(Identity.Titles()) do
+                if entry.id:lower() == text:lower() then
+                    Identity.kind, Identity.value = "id", entry.id
+                    break
+                end
+            end
+            if not Identity.kind then
+                Identity.kind, Identity.value = "text", text
+            end
+        end
+    end
+end
+
+-- Bungkus fungsi Roles (tabel Roles dipakai bersama; game memanggil lewat tabel itu)
+function Identity.Patch()
+    if Identity.patched then
+        return true
+    end
+    local roles = Info.Roles()
+    if type(roles) ~= "table" then
+        return false
+    end
+    local o = Identity.orig
+    for _, key in ipairs({ "nameOf", "titleOf", "titleColor", "tagText", "guildTag" }) do
+        if type(roles[key]) == "function" then
+            o[key] = roles[key]
+        end
+    end
+    local function install(key, fn)
+        if not o[key] then
+            return
+        end
+        local ok = pcall(function()
+            roles[key] = fn
+        end)
+        if not ok and setreadonly then
+            pcall(setreadonly, roles, false)
+            pcall(function()
+                roles[key] = fn
+            end)
+        end
+    end
+    install("nameOf", function(player, ...)
+        if Identity.active and Identity.name and player == Player then
+            return Identity.name
+        end
+        return o.nameOf(player, ...)
+    end)
+    install("titleOf", function(userId, ...)
+        if Identity.active and userId == Player.UserId then
+            if Identity.kind == "id" then
+                return Identity.value
+            elseif Identity.kind == "none" or Identity.kind == "text" then
+                return nil
+            end
+        end
+        return o.titleOf(userId, ...)
+    end)
+    install("titleColor", function(userId, ...)
+        if Identity.active and userId == Player.UserId
+            and (Identity.kind == "none" or Identity.kind == "text") then
+            return nil
+        end
+        return o.titleColor(userId, ...)
+    end)
+    install("tagText", function(name, userId, ...)
+        if Identity.active and userId == Player.UserId
+            and (Identity.kind == "none" or Identity.kind == "text") then
+            -- title asli dibuang; tag bawaan tidak ikut. Title teks jadi awalan nama.
+            local prefix = Identity.kind == "text" and TitlePrefix(Identity.value) or ""
+            return prefix .. tostring(name)
+        end
+        return o.tagText(name, userId, ...)
+    end)
+    install("guildTag", function(userId, ...)
+        if Identity.active and Identity.hidden and userId == Player.UserId then
+            return ""
+        end
+        return o.guildTag(userId, ...)
+    end)
+    Identity.patched = true
+    return true
+end
+
+-- Label nama menyimpan SALINAN titleOf/titleColor (diambil saat game mulai), jadi
+-- salinan itu juga dibungkus. Tabel label dicari lewat getgc.
+function Identity.PatchLabels()
+    if not getgcFn or os.clock() - Identity.scanAt < 8 then
+        return
+    end
+    Identity.scanAt = os.clock()
+    local roles = Info.Roles()
+    if type(roles) ~= "table" then
+        return
+    end
+    for _, t in ipairs(getgcFn(true)) do
+        if type(t) == "table" and not Identity.labelOrig[t] then
+            local ok, isLabel = pcall(function()
+                return type(rawget(t, "titleOf")) == "function"
+                    and type(rawget(t, "redraw")) == "function"
+                    and type(rawget(t, "stillTags")) == "table"
+            end)
+            if ok and isLabel then
+                Identity.labelOrig[t] = { titleOf = rawget(t, "titleOf"), titleColor = rawget(t, "titleColor") }
+                table.insert(Identity.labels, t)
+                pcall(function()
+                    t.titleOf = function(userId, ...)
+                        return roles.titleOf(userId, ...)
+                    end
+                    if type(Identity.labelOrig[t].titleColor) == "function" then
+                        t.titleColor = function(userId, ...)
+                            return roles.titleColor(userId, ...)
+                        end
+                    end
+                end)
+            end
+        end
+    end
+end
+
+-- Terapkan semua pengaturan (dipanggil tiap pengaturan berubah)
+function Identity.Apply()
+    Identity.active = cfg.idOn == true
+    IdResolve()
+    if Identity.active then
+        Identity.Patch()
+        Identity.PatchLabels()
+    end
+    -- atribut Nick lokal: dipakai beberapa UI game langsung (atribut tidak dikirim ke server)
+    if Identity.active and Identity.name then
+        if not Identity.nickSaved then
+            Identity.nickSaved = true
+            Identity.nickOrig = Player:GetAttribute("Nick")
+        end
+        pcall(Player.SetAttribute, Player, "Nick", Identity.name)
+    elseif Identity.nickSaved then
+        Identity.nickSaved = false
+        pcall(Player.SetAttribute, Player, "Nick", Identity.nickOrig)
+    end
+    for _, label in ipairs(Identity.labels) do
+        pcall(function()
+            label.title = nil
+            label.redraw()
+        end)
+    end
+end
+
+-- Teks pratinjau (tanpa kode warna)
+function Identity.Preview()
+    if not cfg.idOn then
+        return "Mati. Nama & title asli dipakai."
+    end
+    local name = Identity.name or Player.DisplayName
+    local title = ""
+    if Identity.kind == "text" then
+        title = (Identity.value:gsub("`.", ""):gsub("`", "")) .. " "
+    elseif Identity.kind == "id" then
+        title = "<" .. Identity.value .. "> "
+    elseif Identity.kind == "none" then
+        title = "(tanpa title) "
+    else
+        title = "(title asli) "
+    end
+    return title .. name
+end
+
+
 local function BuildVisualPage(page)
     AddSection(page, "Item Visual")
     AddLabel(page, "Tekan item untuk memasukkannya ke inventory, tekan lagi untuk menghapus. "
@@ -3223,6 +4729,81 @@ local function BuildVisualPage(page)
     table.insert(ui.refreshers, Fill)
 end
 
+-- Halaman: Identitas (nama & title palsu) --------------------------------
+local function BuildIdentityPage(page)
+    AddSection(page, "Nama & Title Palsu")
+    AddLabel(page, "Hanya tampilan di layarmu. Pemain lain tetap melihat nama & title aslimu. "
+        .. "Berlaku untuk label di atas karakter, chat, dan daftar pemain di game.")
+    local preview
+    local function Refresh()
+        Identity.Apply()
+        SaveConfig()
+        if preview then
+            preview.Text = "Tampilan: " .. Identity.Preview()
+        end
+    end
+    AddToggle(page, "Identitas palsu", function()
+        return cfg.idOn == true
+    end, function(on)
+        cfg.idOn = on
+        Refresh()
+    end)
+    preview = AddLabel(page, "Tampilan: " .. Identity.Preview(), C.text, 11)
+    AddInput(page, "Nama ID Growlock", cfg.idName or "", "nama palsu", function(text, inputBox)
+        cfg.idName = Trim(text)
+        cfg.idHidden = false
+        inputBox.Text = cfg.idName
+        Refresh()
+    end)
+    AddToggle(page, "Sembunyikan nama [HIDDEN]", function()
+        return cfg.idHidden == true
+    end, function(on)
+        cfg.idHidden = on
+        if on then
+            cfg.idOn = true
+        end
+        Refresh()
+    end)
+    AddSection(page, "Title")
+    AddInput(page, "Title (id / teks / none)", cfg.idTitle or "", "kosong = title asli", function(text, inputBox)
+        cfg.idTitle = Trim(text)
+        inputBox.Text = cfg.idTitle
+        Refresh()
+    end)
+    AddButton(page, "Title asli (reset)", function()
+        cfg.idTitle = ""
+        Refresh()
+    end)
+    AddButton(page, "Tanpa title", function()
+        cfg.idTitle = "none"
+        cfg.idOn = true
+        Refresh()
+    end)
+    AddLabel(page, "Teks bebas boleh pakai kode warna game: `2hijau`` `4merah`` `wputih``.", C.text, 10)
+    AddSection(page, "Jenis title")
+    local box = MakeBox(page)
+    AddButton(page, "Cek daftar title", function()
+        Identity.Titles(true)
+        ClearBox(box)
+        for _, entry in ipairs(Identity.Titles()) do
+            local b = AddButton(box, entry.id .. "  (" .. entry.source .. ")", function()
+                cfg.idTitle = entry.id
+                cfg.idOn = true
+                Refresh()
+            end)
+            b.TextSize = 11
+        end
+    end)
+    for _, entry in ipairs(Identity.Titles()) do
+        local b = AddButton(box, entry.id .. "  (" .. entry.source .. ")", function()
+            cfg.idTitle = entry.id
+            cfg.idOn = true
+            Refresh()
+        end)
+        b.TextSize = 11
+    end
+end
+
 -- Halaman: Update Log ---------------------------------------------------
 local function BuildLogPage(page)
     for _, entry in ipairs(UPDATE_LOG) do
@@ -3233,10 +4814,112 @@ local function BuildLogPage(page)
     end
 end
 
+-- Halaman: Dirt Farm ----------------------------------------------------
+local function BuildDirtPage(page)
+    AddSection(page, "Auto Dirt Farm")
+    AddToggle(page, "Auto Dirt Farm", function() return Dirt.on end, function(on)
+        if on then
+            Dirt.Start()
+        else
+            Dirt.Stop("Dimatikan")
+        end
+    end)
+    AddToggle(page, "Place dirt setelah dig", function() return cfg.dirtPlace end, function(on)
+        cfg.dirtPlace = on
+        SaveConfig()
+    end)
+    AddToggle(page, "Tanam & panen kalau dirt habis", function() return cfg.dirtSeed end, function(on)
+        cfg.dirtSeed = on
+        SaveConfig()
+    end)
+    AddToggle(page, "Auto Collect", function() return cfg.dirtCollect end, function(on)
+        cfg.dirtCollect = on
+        SaveConfig()
+    end)
+
+    AddSection(page, "Pengaturan")
+    AddInput(page, "Delay break/place (dtk)", cfg.dirtDelay, "0.22", function(text, box)
+        local value = tonumber(text)
+        if not value then
+            box.Text = tostring(cfg.dirtDelay)
+            Notify("Isi angka, minimal 0.01.")
+            return
+        end
+        cfg.dirtDelay = math.clamp(value, 0.01, 5)
+        box.Text = tostring(cfg.dirtDelay)
+        SaveConfig()
+    end)
+    AddInput(page, "Jumlah seed ditanam", cfg.dirtSeedCount, "30", function(text, box)
+        local value = tonumber(text)
+        if not value then
+            box.Text = tostring(cfg.dirtSeedCount)
+            Notify("Isi angka 20 sampai 50.")
+            return
+        end
+        cfg.dirtSeedCount = math.clamp(math.floor(value), 1, 50)
+        box.Text = tostring(cfg.dirtSeedCount)
+        SaveConfig()
+    end)
+    AddInput(page, "ID block dirt (0=auto)", cfg.dirtId, "0", function(text, box)
+        local value = tonumber(text)
+        cfg.dirtId = (value and value >= 0) and math.floor(value) or 0
+        box.Text = tostring(cfg.dirtId)
+        SaveConfig()
+    end)
+    AddInput(page, "ID dirt seed (0=auto)", cfg.dirtSeedId, "0", function(text, box)
+        local value = tonumber(text)
+        cfg.dirtSeedId = (value and value >= 0) and math.floor(value) or 0
+        box.Text = tostring(cfg.dirtSeedId)
+        SaveConfig()
+    end)
+    AddLabel(page, "Game membatasi pukulan minimal 0.22 dtk dan place minimal 0.2 dtk; delay di bawah itu otomatis dinaikkan.")
+
+    AddSection(page, "Status")
+    local labels = AddRows(page, {
+        { key = "status", label = "Status" },
+        { key = "rows", label = "Baris dig" },
+        { key = "broken", label = "Break" },
+        { key = "placed", label = "Place dirt" },
+        { key = "planted", label = "Seed ditanam" },
+        { key = "harvested", label = "Dipanen" },
+        { key = "picked", label = "Collect" },
+        { key = "ids", label = "Dirt / Seed" },
+    })
+    local function PaintStats()
+        local st = Dirt.stats
+        labels.status.Text = Dirt.status
+        labels.rows.Text = tostring(st.rows)
+        labels.broken.Text = tostring(st.broken)
+        labels.placed.Text = tostring(st.placed)
+        labels.planted.Text = tostring(st.planted)
+        labels.harvested.Text = tostring(st.harvested)
+        labels.picked.Text = tostring(st.picked)
+        local blockId, seedId = Dirt.BlockId and Dirt.BlockId(), Dirt.SeedId and Dirt.SeedId()
+        labels.ids.Text = string.format("%s / %s",
+            blockId and (ItemName(blockId) or blockId) or "-", seedId and (ItemName(seedId) or seedId) or "-")
+    end
+    PaintStats()
+    table.insert(ui.refreshers, PaintStats)
+    task.spawn(function()
+        while labels.status.Parent do
+            task.wait(0.5)
+            if page.Visible then
+                pcall(PaintStats)
+            end
+        end
+    end)
+    AddLabel(page, "Berdiri di baris paling atas (lantai tidak bolong), siapkan Dirt Seed (20-50) di inventory, lalu nyalakan. "
+        .. "Alur: jalan ke ujung, break 2 blok bawah, break lurus sampai ujung (background ikut), break 1 blok atas, "
+        .. "turun lagi, sampai bedrock. Lalu respawn, place dirt dari bawah ke atas. Dirt habis: tanam seed, tunggu matang, panen. "
+        .. "Command: " .. cfg.prefix .. "df on/off")
+end
+
 local TABS = {
     { id = "move", label = "Fitur", build = BuildMovePage },
     { id = "farm", label = "Farm", build = BuildFarmPage },
+    { id = "dirt", label = "Dirt", build = BuildDirtPage },
     { id = "visual", label = "Visual", build = BuildVisualPage },
+    { id = "identity", label = "Nama", build = BuildIdentityPage },
     { id = "drop", label = "Drop", build = BuildDropPage },
     { id = "profile", label = "Info", build = BuildProfilePage },
     { id = "log", label = "Log", build = BuildLogPage },
@@ -3316,7 +4999,7 @@ local function OpenWindow(tabId)
         BackgroundTransparency = 1,
         Position = UDim2.fromOffset(10, 0),
         Size = UDim2.new(1, -90, 1, 0),
-        Text = "PeexHubs | GrowLock v0.10",
+        Text = "PeexHubs | GrowLock v0.14",
         TextColor3 = Color3.new(1, 1, 1),
         Font = FONT,
         TextSize = 14,
@@ -3570,6 +5253,51 @@ local function HandleMessage(text)
         end
         return true
 
+    elseif command == "zoom" or command == "zo" then
+        local value = tonumber(args[1])
+        if value then
+            cfg.zoomMin = math.clamp(value, 0.05, 0.6)
+            cfg.zoomOn = true
+            SaveConfig()
+            Zoom.Start()
+            Zoom.Apply()
+            Notify("Zoom min: " .. cfg.zoomMin)
+        elseif WantedState(args[1], Zoom.on) then
+            cfg.zoomOn = true
+            SaveConfig()
+            Zoom.Start()
+        else
+            cfg.zoomOn = false
+            SaveConfig()
+            Zoom.Stop()
+        end
+        for _, refresh in ipairs(ui.refreshers) do
+            pcall(refresh)
+        end
+        return true
+
+    elseif command == "lp" or command == "longpunch" then
+        local value = tonumber(args[1])
+        if value then
+            cfg.punchRange = math.clamp(value, 3, 40)
+            cfg.punchOn = true
+            SaveConfig()
+            LongPunch.Start()
+            Notify("Jarak punch: " .. cfg.punchRange .. " tile")
+        elseif WantedState(args[1], LongPunch.on) then
+            cfg.punchOn = true
+            SaveConfig()
+            LongPunch.Start()
+        else
+            cfg.punchOn = false
+            SaveConfig()
+            LongPunch.Stop()
+        end
+        for _, refresh in ipairs(ui.refreshers) do
+            pcall(refresh)
+        end
+        return true
+
     elseif command == "gstatus" or command == "status" then
         cam = nil
         Notify(Diag())
@@ -3598,6 +5326,54 @@ local function HandleMessage(text)
         end
         return true
 
+    elseif command == "fakename" or command == "fn" then
+        local name = Trim(rest)
+        if name == "" or name:lower() == "off" then
+            cfg.idName, cfg.idHidden = "", false
+        elseif name:lower() == "hidden" then
+            cfg.idHidden, cfg.idOn = true, true
+        else
+            cfg.idName, cfg.idHidden, cfg.idOn = name, false, true
+        end
+        Identity.Apply()
+        SaveConfig()
+        Notify("Nama: " .. Identity.Preview())
+        for _, refresh in ipairs(ui.refreshers) do
+            pcall(refresh)
+        end
+        return true
+
+    elseif command == "faketitle" or command == "ft" then
+        local title = Trim(rest)
+        if title:lower() == "off" then
+            title = ""
+        end
+        cfg.idTitle = title
+        if title ~= "" then
+            cfg.idOn = true
+        end
+        Identity.Apply()
+        SaveConfig()
+        Notify("Title: " .. Identity.Preview())
+        return true
+
+    elseif command == "fakeid" then
+        local want = WantedState(args[1], cfg.idOn)
+        cfg.idOn = want
+        Identity.Apply()
+        SaveConfig()
+        Notify("Identitas palsu " .. (want and "ON: " .. Identity.Preview() or "OFF"))
+        return true
+
+    elseif command == "titles" then
+        OpenWindow("identity")
+        local ids = {}
+        for _, entry in ipairs(Identity.Titles(true)) do
+            table.insert(ids, entry.id)
+        end
+        Notify("Jenis title (" .. #ids .. "): " .. table.concat(ids, ", "))
+        return true
+
     elseif command == "log" or command == "updatelog" or command == "changelog" then
         OpenWindow("log")
         return true
@@ -3613,6 +5389,18 @@ local function HandleMessage(text)
             Farm.Start()
         else
             Farm.Stop("Dimatikan")
+        end
+        for _, refresh in ipairs(ui.refreshers) do
+            pcall(refresh)
+        end
+        return true
+
+    elseif command == "df" or command == "dirtfarm" then
+        local want = WantedState(args[1], Dirt.on)
+        if want then
+            Dirt.Start()
+        else
+            Dirt.Stop("Dimatikan")
         end
         for _, refresh in ipairs(ui.refreshers) do
             pcall(refresh)
@@ -3723,13 +5511,22 @@ task.spawn(function()
     if cfg.god then
         pcall(StartGod)
     end
+    if cfg.zoomOn then
+        pcall(Zoom.Start)
+    end
+    if cfg.punchOn then
+        pcall(LongPunch.Start)
+    end
     if next(cfg.visual) ~= nil then
         pcall(Visual.Reapply)
+    end
+    if cfg.idOn then
+        pcall(Identity.Apply)
     end
 end)
 
 if FindInventory() or InWorld(FindWorld()) then
-    Notify("PeexHubs | GrowLock v0.10 aktif. Ketik " .. cfg.prefix .. "gt atau tekan tombol GT.")
+    Notify("PeexHubs | GrowLock v0.14 aktif. Ketik " .. cfg.prefix .. "gt atau tekan tombol GT.")
 else
     Notify("Aktif. Belum masuk world / inventory belum terbaca; ketik " .. cfg.prefix .. "gstatus untuk cek.")
 end
